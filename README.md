@@ -5,8 +5,13 @@ Telegram bot that downloads YouTube media with yt-dlp and sends the finished fil
 ## Features
 
 - YouTube / youtu.be / YouTube Music links
+- Deletes the submitted URL message after accepting it
+- One editable media panel instead of creating a new message for every menu/status screen
+- Video thumbnail, title, duration and a compact clickable YouTube link
 - Audio or Video selection
 - Video buttons generated from resolutions actually available for the video
+- Estimated or exact size shown next to audio/video options when yt-dlp exposes enough metadata
+- Download percentage and progress bar
 - Audio: original, MP3 128, MP3 192, M4A, Opus
 - ffmpeg merge/conversion through yt-dlp
 - Temporary files are deleted after processing
@@ -42,23 +47,30 @@ If you do not know your Telegram numeric user ID, leave ALLOWED_USER_IDS empty f
 
 Run:
 
-    python run.py
+    python main.py
 
 ## Usage
 
 1. Send a YouTube URL.
-2. Choose Audio or Video.
-3. Choose format or quality.
-4. The bot downloads and uploads the file.
-5. Temporary media is removed from disk.
+2. The original URL message is removed.
+3. The bot shows the video's thumbnail and information.
+4. Choose Audio or Video.
+5. Choose a format or quality; the button also shows the expected file size.
+6. The same panel shows download progress.
+7. The finished file is sent to the chat.
+8. Temporary media is removed from disk.
 
 ## Large files
 
-Telegram's hosted Bot API limits new bot uploads to 50 MB. The bot checks this before upload.
+Telegram's hosted Bot API limits new bot uploads to about 50 MB. Options estimated above the current hosted upload limit are marked with 🚧 and are temporarily unavailable.
 
 A self-hosted Telegram Bot API server can upload files up to 2000 MB. Set:
 
     TELEGRAM_API_BASE=http://127.0.0.1:8081
+
+Options estimated above 2000 MB are marked with ❌.
+
+A temporary-link delivery mode for files that cannot be sent directly to Telegram is planned, but is not implemented yet.
 
 When switching an existing bot from Telegram's hosted Bot API to a local Bot API server, log the bot out from the hosted API first.
 
