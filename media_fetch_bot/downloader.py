@@ -5,6 +5,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 import yt_dlp
@@ -19,13 +20,26 @@ SUPPORTED_HOSTS = {
 }
 
 
+ProgressCallback = Callable[[float | None, str], None]
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadOption:
+    profile: str
+    label: str
+    size_bytes: int | None
+    exact_size: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class MediaInfo:
     media_id: str
     title: str
     duration: int | None
     webpage_url: str
-    heights: tuple[int, ...]
+    thumbnail_url: str | None
+    video_options: tuple[DownloadOption, ...]
+    audio_options: tuple[DownloadOption, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +59,124 @@ def is_supported_url(url: str) -> bool:
     return parsed.scheme in {"http", "https"} and (parsed.hostname or "").lower() in SUPPORTED_HOSTS
 
 
+def _format_size(fmt: dict, duration: int | None) -> tuple[int | None, bool]:
+    if fmt.get("filesize"):
+        return int(fmt["filesize"]), True
+    if fmt.get("filesize_approx"):
+        return int(fmt["filesize_approx"]), False
+
+    bitrate = fmt.get("tbr") or fmt.get("abr") or fmt.get("vbr")
+    if duration and bitrate:
+        return int(float(bitrate) * 1000 / 8 * duration), False
+    return None, False
+
+
+def _quality_score(fmt: dict, preferred_ext: str | None = None) -> tuple:
+    return (
+        1 if preferred_ext and fmt.get("ext") == preferred_ext else 0,
+        float(fmt.get("quality") or 0),
+        float(fmt.get("fps") or 0),
+        float(fmt.get("tbr") or 0),
+        float(fmt.get("filesize") or fmt.get("filesize_approx") or 0),
+    )
+
+
+def _pick_best(formats: list[dict], preferred_ext: str | None = None) -> dict | None:
+    if not formats:
+        return None
+    return max(formats, key=lambda fmt: _quality_score(fmt, preferred_ext))
+
+
+def _sum_sizes(
+    first: tuple[int | None, bool],
+    second: tuple[int | None, bool],
+) -> tuple[int | None, bool]:
+    if first[0] is None or second[0] is None:
+        return None, False
+    return first[0] + second[0], first[1] and second[1]
+
+
+def _build_video_options(formats: list[dict], duration: int | None) -> tuple[DownloadOption, ...]:
+    audio_only = [
+        fmt
+        for fmt in formats
+        if fmt.get("vcodec") == "none" and fmt.get("acodec") not in {None, "none"}
+    ]
+    best_m4a_audio = _pick_best(audio_only, "m4a") or _pick_best(audio_only)
+    audio_size = _format_size(best_m4a_audio, duration) if best_m4a_audio else (None, False)
+
+    heights = sorted(
+        {
+            int(fmt["height"])
+            for fmt in formats
+            if fmt.get("height") and fmt.get("vcodec") not in {None, "none"}
+        }
+    )
+
+    options: list[DownloadOption] = []
+    for height in heights:
+        exact_height = [
+            fmt
+            for fmt in formats
+            if fmt.get("height") == height and fmt.get("vcodec") not in {None, "none"}
+        ]
+        video_only = [fmt for fmt in exact_height if fmt.get("acodec") == "none"]
+        progressive = [fmt for fmt in exact_height if fmt.get("acodec") not in {None, "none"}]
+
+        best_video = _pick_best(video_only, "mp4") or _pick_best(video_only)
+        best_progressive = _pick_best(progressive, "mp4") or _pick_best(progressive)
+
+        if best_video and best_m4a_audio:
+            size_bytes, exact = _sum_sizes(
+                _format_size(best_video, duration),
+                audio_size,
+            )
+        elif best_progressive:
+            size_bytes, exact = _format_size(best_progressive, duration)
+        else:
+            size_bytes, exact = None, False
+
+        options.append(
+            DownloadOption(
+                profile=f"video:{height}",
+                label=f"{height}p",
+                size_bytes=size_bytes,
+                exact_size=exact,
+            )
+        )
+
+    return tuple(options)
+
+
+def _build_audio_options(formats: list[dict], duration: int | None) -> tuple[DownloadOption, ...]:
+    audio_only = [
+        fmt
+        for fmt in formats
+        if fmt.get("vcodec") == "none" and fmt.get("acodec") not in {None, "none"}
+    ]
+    best_audio = _pick_best(audio_only)
+    best_m4a = _pick_best(audio_only, "m4a")
+    opus_audio = [fmt for fmt in audio_only if "opus" in str(fmt.get("acodec", "")).lower()]
+    best_opus = _pick_best(opus_audio)
+
+    source_size = _format_size(best_audio, duration) if best_audio else (None, False)
+    m4a_size = _format_size(best_m4a, duration) if best_m4a else source_size
+    opus_size = _format_size(best_opus, duration) if best_opus else source_size
+
+    def mp3_size(kbps: int) -> int | None:
+        if not duration:
+            return None
+        return int(duration * kbps * 1000 / 8 * 1.02)
+
+    return (
+        DownloadOption("audio:source", "⭐ Original", source_size[0], source_size[1]),
+        DownloadOption("audio:mp3_128", "MP3 128", mp3_size(128), False),
+        DownloadOption("audio:mp3_192", "MP3 192", mp3_size(192), False),
+        DownloadOption("audio:m4a", "M4A", m4a_size[0], m4a_size[1]),
+        DownloadOption("audio:opus", "Opus", opus_size[0], opus_size[1]),
+    )
+
+
 def _extract_info_sync(url: str) -> MediaInfo:
     opts = {
         "quiet": True,
@@ -58,23 +190,25 @@ def _extract_info_sync(url: str) -> MediaInfo:
     if not info or info.get("_type") == "playlist":
         raise ValueError("Send a link to a single video, not a playlist.")
 
-    heights = sorted(
-        {
-            int(fmt["height"])
-            for fmt in info.get("formats", [])
-            if fmt.get("height") and fmt.get("vcodec") not in {None, "none"}
-        }
-    )
-
-    if not heights:
+    duration = int(info["duration"]) if info.get("duration") is not None else None
+    formats = list(info.get("formats") or [])
+    video_options = _build_video_options(formats, duration)
+    if not video_options:
         raise ValueError("No downloadable video formats were found.")
+
+    thumbnails = info.get("thumbnails") or []
+    thumbnail_url = info.get("thumbnail")
+    if not thumbnail_url and thumbnails:
+        thumbnail_url = thumbnails[-1].get("url")
 
     return MediaInfo(
         media_id=str(info["id"]),
         title=str(info.get("title") or info["id"]),
-        duration=int(info["duration"]) if info.get("duration") is not None else None,
+        duration=duration,
         webpage_url=str(info.get("webpage_url") or url),
-        heights=tuple(heights),
+        thumbnail_url=str(thumbnail_url) if thumbnail_url else None,
+        video_options=video_options,
+        audio_options=_build_audio_options(formats, duration),
     )
 
 
@@ -90,12 +224,33 @@ def _pick_output_file(temp_dir: Path) -> Path:
     ]
     if not files:
         raise RuntimeError("yt-dlp finished, but no output file was created.")
-    return max(files, key=lambda p: p.stat().st_mtime_ns)
+    return max(files, key=lambda path: path.stat().st_mtime_ns)
 
 
-def _download_sync(url: str, profile: str, work_dir: Path) -> DownloadedFile:
+def _download_sync(
+    url: str,
+    profile: str,
+    work_dir: Path,
+    progress_callback: ProgressCallback | None = None,
+) -> DownloadedFile:
     temp_dir = Path(tempfile.mkdtemp(prefix="media-fetch-", dir=work_dir))
     output_template = str(temp_dir / "%(title).160B [%(id)s].%(ext)s")
+
+    def progress_hook(data: dict) -> None:
+        if not progress_callback:
+            return
+        status = data.get("status")
+        if status == "downloading":
+            total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            downloaded = data.get("downloaded_bytes") or 0
+            percent = (float(downloaded) / float(total) * 100) if total else None
+            progress_callback(percent, "downloading")
+        elif status == "finished":
+            progress_callback(100.0, "processing")
+
+    def postprocessor_hook(data: dict) -> None:
+        if progress_callback and data.get("status") == "started":
+            progress_callback(100.0, "processing")
 
     common: dict = {
         "outtmpl": output_template,
@@ -104,6 +259,8 @@ def _download_sync(url: str, profile: str, work_dir: Path) -> DownloadedFile:
         "no_warnings": True,
         "retries": 5,
         "fragment_retries": 5,
+        "progress_hooks": [progress_hook],
+        "postprocessor_hooks": [postprocessor_hook],
     }
 
     if profile.startswith("video:"):
@@ -171,5 +328,16 @@ def _download_sync(url: str, profile: str, work_dir: Path) -> DownloadedFile:
         raise
 
 
-async def download(url: str, profile: str, work_dir: Path) -> DownloadedFile:
-    return await asyncio.to_thread(_download_sync, url, profile, work_dir)
+async def download(
+    url: str,
+    profile: str,
+    work_dir: Path,
+    progress_callback: ProgressCallback | None = None,
+) -> DownloadedFile:
+    return await asyncio.to_thread(
+        _download_sync,
+        url,
+        profile,
+        work_dir,
+        progress_callback,
+    )
