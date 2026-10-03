@@ -95,19 +95,13 @@ def main_keyboard(token: str) -> InlineKeyboardMarkup:
 def option_block_reason(option: DownloadOption) -> str | None:
     if option.size_bytes is not None and option.size_bytes > LOCAL_UPLOAD_LIMIT:
         return "too_large"
-    if (
-        not settings.telegram_api_base
-        and option.size_bytes is not None
-        and option.size_bytes > HOSTED_UPLOAD_LIMIT
-    ):
-        return "hosted_limit"
     return None
 
 
 def option_button_text(option: DownloadOption) -> str:
     size = format_size(option.size_bytes, option.exact_size)
     reason = option_block_reason(option)
-    suffix = " ❌" if reason == "too_large" else " 🚧" if reason == "hosted_limit" else ""
+    suffix = " ❌" if reason == "too_large" else ""
     return f"{option.label} • {size}{suffix}"
 
 
@@ -363,13 +357,7 @@ async def unavailable_option(callback: CallbackQuery) -> None:
         await callback.answer("This menu expired. Send the link again.", show_alert=True)
         return
 
-    if reason == "too_large":
-        text = "❌ Estimated file size is over 2000 MB, so this option is unavailable."
-    else:
-        text = (
-            "🚧 This file is estimated to exceed the standard Telegram Bot API upload limit. "
-            "Temporary download links are not implemented yet."
-        )
+    text = "❌ Estimated file size is over 2000 MB, so this option is unavailable."
     await callback.answer(text, show_alert=True)
 
 
@@ -419,13 +407,7 @@ async def download_media(callback: CallbackQuery, bot: Bot) -> None:
 
     reason = option_block_reason(option)
     if reason:
-        if reason == "too_large":
-            text = "❌ This option is estimated to be over 2000 MB."
-        else:
-            text = (
-                "🚧 This option is estimated to exceed the current Telegram upload limit. "
-                "Temporary download links will be added later."
-            )
+        text = "❌ This option is estimated to be over 2000 MB."
         if not cached:
             await callback.answer(text, show_alert=True)
         await edit_panel(
@@ -473,8 +455,10 @@ async def download_media(callback: CallbackQuery, bot: Bot) -> None:
                 callback.message,
                 panel_caption(
                     session.info,
-                    f"🚧 <b>Direct delivery is not available yet.</b>\n"
-                    f"The finished file is {size_text}. Temporary download links will be added later.",
+                    f"✅ <b>Download finished.</b>\n"
+                    f"📦 {size_text}\n\n"
+                    "Telegram cannot receive this file through the current hosted Bot API. "
+                    "A temporary download-link delivery method will be added later.",
                 ),
                 main_keyboard(token),
             )
