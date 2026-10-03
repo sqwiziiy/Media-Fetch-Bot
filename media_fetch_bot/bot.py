@@ -416,18 +416,26 @@ async def download_media(callback: CallbackQuery, bot: Bot) -> None:
             return
         except Exception:
             log.exception("Cached file_id failed; downloading again")
-    else:
-        reason = option_block_reason(option)
-        if reason:
-            if reason == "too_large":
-                text = "❌ This option is estimated to be over 2000 MB."
-            else:
-                text = (
-                    "🚧 This option is estimated to exceed the current Telegram upload limit. "
-                    "Temporary download links will be added later."
-                )
+
+    reason = option_block_reason(option)
+    if reason:
+        if reason == "too_large":
+            text = "❌ This option is estimated to be over 2000 MB."
+        else:
+            text = (
+                "🚧 This option is estimated to exceed the current Telegram upload limit. "
+                "Temporary download links will be added later."
+            )
+        if not cached:
             await callback.answer(text, show_alert=True)
-            return
+        await edit_panel(
+            callback.message,
+            panel_caption(session.info, text),
+            main_keyboard(token),
+        )
+        return
+
+    if not cached:
         await callback.answer("Starting…")
 
     downloaded = None
