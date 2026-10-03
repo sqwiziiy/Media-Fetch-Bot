@@ -62,13 +62,13 @@ Run:
 
 ## Large files
 
-Telegram's hosted Bot API limits new bot uploads to about 50 MB. Options estimated above the current hosted upload limit are marked with 🚧 and are temporarily unavailable.
+Telegram's hosted Bot API limits new bot uploads to about 50 MB, but this does not make those media qualities unavailable. The bot still allows and downloads selections up to 2000 MB. If the finished file is too large for the currently configured hosted Bot API, the panel reports that delivery is unavailable for now; temporary-link delivery is planned.
 
 A self-hosted Telegram Bot API server can upload files up to 2000 MB. Set:
 
     TELEGRAM_API_BASE=http://127.0.0.1:8081
 
-Options estimated above 2000 MB are marked with ❌.
+Only options estimated above 2000 MB are marked with ❌ and blocked.
 
 A temporary-link delivery mode for files that cannot be sent directly to Telegram is planned, but is not implemented yet.
 
